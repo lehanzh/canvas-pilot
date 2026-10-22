@@ -220,6 +220,24 @@ def app_config_path(app: str) -> Path:
     return home / ".config" / "Claude" / "claude_desktop_config.json"
 
 
+def claude_desktop_running() -> bool:
+    """Claude Desktop keeps its settings in memory and writes them back when it quits or saves
+    preferences, wiping edits made while it was open, so we only edit the file while it's closed."""
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True, timeout=10).stdout
+            # Case-sensitive: Claude Code ships a lowercase helper at .../claude.app/Contents/MacOS/claude.
+            return any(line.strip().endswith("/Claude.app/Contents/MacOS/Claude") for line in out.splitlines())
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Claude.exe", "/NH"], capture_output=True, text=True, timeout=10
+            ).stdout
+            return "claude.exe" in out.lower()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return False
+
+
 def connect_app(app: str) -> int:
     cmd, args = launch_command()
     name = APP_NAMES[app]
@@ -236,6 +254,12 @@ def connect_app(app: str) -> int:
         print("Connected to Claude Code (all projects). Start a new Claude Code session to use it.")
         return 0
 
+    if app == "claude-desktop" and claude_desktop_running():
+        print("Claude Desktop is open. It would overwrite this change when it closes, so:")
+        print("  1. Quit Claude Desktop completely (Mac: Command+Q; Windows: right-click the tray icon > Quit).")
+        print("  2. Run this command again.")
+        print("  3. Open Claude Desktop.")
+        return 1
     path = app_config_path(app)
     data: dict = {}
     if path.exists() and path.read_text().strip():
@@ -256,5 +280,8 @@ def connect_app(app: str) -> int:
     servers["canvas"] = {"command": cmd, "args": args} if args else {"command": cmd}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
-    print(f"Connected to {name}. Fully quit {name} and open it again to load the Canvas tools.")
+    if app == "claude-desktop":
+        print("Connected to Claude Desktop. Open it now; the Canvas tools load when it starts.")
+    else:
+        print(f"Connected to {name}. Fully quit {name} and open it again to load the Canvas tools.")
     return 0

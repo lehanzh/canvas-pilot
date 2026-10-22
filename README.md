@@ -177,18 +177,22 @@ Your token is now stored in your computer's secure password storage: **Keychain*
 
 ### Step 7: Connect it to Claude Desktop
 
-Paste this and press **Enter**:
+**First, quit Claude Desktop completely.** Claude keeps its settings in memory while it's open and
+saves them back when it closes, which would erase this change. Closing the window isn't enough:
+- **Mac:** click Claude in the Dock, then press **⌘ Command + Q**.
+- **Windows:** right-click the Claude icon near the clock (bottom-right) and choose **Quit**.
+
+Then paste this into the Terminal and press **Enter**:
 
 ```bash
 canvas-pilot connect claude-desktop
 ```
 
 It says **"Connected to Claude Desktop."** Your existing Claude settings are backed up
-automatically first.
+automatically first. (If Claude is still open, it tells you to quit it first instead of making
+the change.)
 
-Now **fully quit Claude Desktop and open it again.** Closing the window isn't enough:
-- **Mac:** click Claude in the Dock, then press **⌘ Command + Q**.
-- **Windows:** right-click the Claude icon near the clock (bottom-right) and choose **Quit**.
+Now **open Claude Desktop again.**
 
 ### Step 8: Try it! 🎉
 
@@ -372,7 +376,7 @@ Then:
 | Pasting does nothing on Windows | **Right-click** inside the PowerShell window to paste. |
 | *"Canvas rejected the access token (401)"* | The token was copied incompletely or has expired. Make a new one (Step 5), then run `canvas-pilot set-token`. |
 | *"Canvas returned a web page instead of API data"* | The Canvas address is wrong. Run `canvas-pilot setup` again and paste the address shown in your browser **while you're inside Canvas**, e.g. `https://myschool.instructure.com`. |
-| Claude doesn't seem to know about Canvas | Make sure you **fully quit** and reopened Claude (Step 7). Run `canvas-pilot check` to confirm the setup works, then run `canvas-pilot connect claude-desktop` again. In Claude Desktop, **Settings → Developer** shows whether "canvas" is running. |
+| Claude doesn't seem to know about Canvas | **Fully quit** Claude Desktop, run `canvas-pilot connect claude-desktop`, then open Claude again (Step 7). The order matters: if Claude is open while the change is made, it erases the change when it closes. Run `canvas-pilot check` to confirm the setup itself works. In Claude Desktop, **Settings → Developer** shows whether "canvas" is running. |
 | One question fails with *"denied access (403)"* | Your instructor or school has hidden that part of Canvas from students. Everything else still works. |
 | Times are off by an hour or more | Run `canvas-pilot setup` again and type your timezone, e.g. `America/New_York` or `Europe/London`. |
 | Windows: *"running scripts is disabled"* | Make sure you copied the **whole** uv command from Step 3, including `-ExecutionPolicy ByPass`. |

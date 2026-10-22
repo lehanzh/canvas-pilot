@@ -37,7 +37,9 @@ AI app (Claude, Cursor, Codex, ...) ──stdio──▶ canvas-pilot ──HTTP
 ## Connecting any AI app by hand
 
 `canvas-pilot connect claude-desktop | claude-code | cursor` edits these apps' settings for you, and
-backs up the existing file first. For other apps, or to do it yourself:
+backs up the existing file first. Claude Desktop must be **closed** when its file is edited: it caches
+the file in memory and writes that copy back on quit, discarding outside edits. `connect` refuses
+while it's running. For other apps, or to do it yourself:
 
 1. Run `canvas-pilot client-config`. It prints every snippet below with the correct absolute path for
    your machine.

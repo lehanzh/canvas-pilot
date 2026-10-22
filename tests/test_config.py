@@ -126,6 +126,9 @@ def test_connect_claude_desktop_merges_and_backs_up(monkeypatch, tmp_path):
     cfg.write_text(json.dumps({"preferences": {"x": 1}, "mcpServers": {"other": {"command": "foo"}}}))
     monkeypatch.setattr(cli, "app_config_path", lambda app: cfg)
     monkeypatch.setattr(cli, "launch_command", lambda: ("/bin/canvas-pilot", []))
+    monkeypatch.setattr(cli, "claude_desktop_running", lambda: True)
+    assert cli.connect_app("claude-desktop") == 1  # refuses while the app could overwrite the file
+    monkeypatch.setattr(cli, "claude_desktop_running", lambda: False)
     assert cli.connect_app("claude-desktop") == 0
     data = json.loads(cfg.read_text())
     assert data["preferences"] == {"x": 1} and data["mcpServers"]["other"] == {"command": "foo"}

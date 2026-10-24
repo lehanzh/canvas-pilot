@@ -144,3 +144,25 @@ def test_connect_refuses_broken_json(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "app_config_path", lambda app: cfg)
     assert cli.connect_app("cursor") == 1
     assert cfg.read_text() == "{ not json"
+
+
+def test_hidden_store_live_reload_and_one_time_legacy_import(tmp_path):
+    from canvas_pilot.hidden import HiddenCourses
+
+    cfg = tmp_path / "config.env"
+    cfg.write_text("CANVAS_BASE_URL=https://a.test\nCANVAS_EXCLUDE_COURSE_IDS=5,6\n")
+    f = tmp_path / "hidden_courses.json"
+    a = HiddenCourses(f, legacy_ids=frozenset({5, 6}), legacy_file=cfg)
+    assert a.ids() == {5, 6}
+    assert "CANVAS_EXCLUDE_COURSE_IDS" not in cfg.read_text() and "CANVAS_BASE_URL=https://a.test" in cfg.read_text()
+
+    b = HiddenCourses(f)  # another running copy of the server (e.g. Claude Code next to Claude Desktop)
+    a.hide(7, "Club")
+    assert 7 in b  # picked up without a restart
+    b.unhide(5)
+    assert a.ids() == {6, 7}
+    # The old setting may live on somewhere we can't edit; an unhide still sticks.
+    assert 5 not in HiddenCourses(f, legacy_ids=frozenset({5, 6}))
+    a.fill_names({6: "Orientation"})
+    assert b.items()[6] == "Orientation"
+    assert b.unhide_all() == 2 and a.ids() == set()

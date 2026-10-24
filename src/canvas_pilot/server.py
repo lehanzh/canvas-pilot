@@ -35,12 +35,17 @@ for "what's due", canvas_list_announcements for course news, and canvas_what_if_
 "what do I need to get an A". Course arguments accept a
 numeric course ID, a course code, or a fragment of the course name (e.g. "3500" or "algorithms").
 IDs printed in results (course_id, assignment_id) can be passed to the detail tools.
+The student can hide courses (canvas_hide_course / canvas_unhide_course): course-wide summaries
+leave hidden courses out, but naming a hidden course still works. Pass include_hidden=true only
+when the student asks to include hidden courses.
 All times are shown in the student's local timezone."""
 
 mcp = MCPServer("canvas_pilot", title="Canvas Pilot", instructions=INSTRUCTIONS, version="0.1.0")
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
 PLANNER_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
+# Changes only the local hidden-courses file, never Canvas.
+LOCAL_SETTING = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 
 _client: CanvasClient | None = None
 
@@ -76,6 +81,9 @@ CourseArg = Annotated[str, Field(min_length=1, description="Course ID, course co
 OptionalCourseArg = Annotated[
     str | None, Field(description="Limit to one course (ID, code, or name fragment). Omit for all active courses.")
 ]
+IncludeHiddenArg = Annotated[
+    bool, Field(description="Also include courses the student has hidden. Only when they ask to include hidden courses.")
+]
 
 
 # -- shared helpers -----------------------------------------------------------
@@ -97,9 +105,28 @@ def _label(course: dict) -> str:
     return code if code and len(code) <= 25 else (course.get("name") or "?")[:40]
 
 
-async def _courses(course: str | None) -> list[dict]:
+async def _courses(course: str | None, include_hidden: bool = False) -> list[dict]:
+    """One named course (hidden or not), or every course for a course-wide view."""
     c = client()
-    return [await c.resolve_course(course)] if course and course.strip() else await c.courses()
+    return [await c.resolve_course(course)] if course and course.strip() else await c.courses(include_hidden)
+
+
+def _hidden_tag(course: dict) -> str:
+    return " (hidden course)" if client().is_hidden(course.get("id")) else ""
+
+
+async def _hidden_footer(course: str | None, include_hidden: bool) -> str:
+    """Course-wide views say what they left out, so a hidden course never silently disappears."""
+    if (course and course.strip()) or include_hidden:
+        return ""
+    c = client()
+    hidden = [x for x in await c.all_courses() if c.is_hidden(x["id"])]
+    if not hidden:
+        return ""
+    s = "s" if len(hidden) > 1 else ""
+    # Names, not codes: codes like "Khoury.Orientation.NU" shorten to a cryptic "Khoury".
+    names = ", ".join(x["name"] if len(x["name"]) <= 30 else x["name"][:29].rstrip() + "…" for x in hidden)
+    return f"\n\n_{len(hidden)} hidden course{s} not included ({names}). Ask about one by name, or ask to include hidden courses._"
 
 
 def _course_errors(results: list[tuple[dict, Any]]) -> str:
@@ -264,21 +291,32 @@ def _item_line(i: WorkItem, now: datetime, *, show_course: bool = True) -> str:
 async def canvas_list_courses(
     include_grades: Annotated[bool, Field(description="Include the current course score/grade.")] = True,
 ) -> str:
-    """List the student's active Canvas courses with IDs, term, and (optionally) current grade."""
-    courses = await client().courses()
+    """List the student's active Canvas courses with IDs, term, and (optionally) current grade.
+    Courses the student has hidden are listed separately at the end."""
+    c = client()
+    courses = await c.all_courses()
+    visible = [x for x in courses if not c.is_hidden(x["id"])]
     if not courses:
         return "No active course enrollments found."
-    lines = [f"{len(courses)} active courses:"]
-    for c in courses:
-        line = f"- **{c['name']}** — code {c.get('course_code', '?')}, course_id={c['id']}"
-        if term := (c.get("term") or {}).get("name"):
+    lines = [f"{len(visible)} active courses:"]
+    for x in visible:
+        line = f"- **{x['name']}** — code {x.get('course_code', '?')}, course_id={x['id']}"
+        if term := (x.get("term") or {}).get("name"):
             line += f", term {term}"
         if include_grades:
-            enr = next((e for e in c.get("enrollments") or [] if e.get("type") == "student"), None)
+            enr = next((e for e in x.get("enrollments") or [] if e.get("type") == "student"), None)
             if enr and enr.get("computed_current_score") is not None:
                 grade = enr.get("computed_current_grade")
                 line += f" — current score {enr['computed_current_score']}%" + (f" ({grade})" if grade else "")
         lines.append(line)
+    hidden = c.hidden.items()
+    if hidden:
+        active = {x["id"] for x in courses}
+        lines.append(f"\n**Hidden ({len(hidden)})** — left out of summaries; still available by name:")
+        for cid, name in sorted(hidden.items(), key=lambda kv: kv[1] or ""):
+            note = "" if cid in active else " (no longer active)"
+            lines.append(f"- {name or 'Unknown course'} — course_id={cid}{note}")
+        lines.append("_To bring one back, unhide it (canvas_unhide_course)._")
     return "\n".join(lines)
 
 
@@ -287,6 +325,7 @@ async def canvas_get_daily_todo(
     days_ahead: Annotated[int, Field(ge=1, le=30, description="How far ahead to look for due work.")] = 7,
     max_items: Annotated[int, Field(ge=1, le=50)] = 20,
     include_undated: Annotated[bool, Field(description="Also include unsubmitted work with no due date.")] = False,
+    include_hidden: IncludeHiddenArg = False,
 ) -> str:
     """Prioritized to-do list across all courses: unsubmitted work ranked by urgency and grade impact.
 
@@ -296,7 +335,7 @@ async def canvas_get_daily_todo(
     planner notes are included/excluded accordingly. Each item lists the reasons for its rank.
     """
     now = _now()
-    courses = await client().courses()
+    courses = await _courses(None, include_hidden)
     items, results, planner = await _work_items(courses, now, days_ahead)
     horizon = now + timedelta(days=days_ahead)
 
@@ -310,6 +349,8 @@ async def canvas_get_daily_todo(
     ]
     for p in planner:
         if p.get("plannable_type") != "planner_note" or (p.get("planner_override") or {}).get("marked_complete"):
+            continue
+        if not include_hidden and client().is_hidden(p.get("course_id")):
             continue
         due = parse_dt(p.get("plannable_date") or (p.get("plannable") or {}).get("todo_date"))
         if due and (due > horizon or due < now - timedelta(days=7)):
@@ -352,7 +393,7 @@ async def canvas_get_daily_todo(
     missed = [i for i in items if i.status == "missed"]
     if missed:
         out += f"\n\n_{len(missed)} past assignment(s) were missed and are now closed — see canvas_get_grades._"
-    return out + _course_errors(results)
+    return out + _course_errors(results) + await _hidden_footer(None, include_hidden)
 
 
 @tool("Get upcoming deadlines")
@@ -360,10 +401,11 @@ async def canvas_get_upcoming_deadlines(
     days_ahead: Annotated[int, Field(ge=1, le=120)] = 14,
     course: OptionalCourseArg = None,
     include_completed: Annotated[bool, Field(description="Also list work already submitted/graded.")] = False,
+    include_hidden: IncludeHiddenArg = False,
 ) -> str:
     """Chronological list of assignment/quiz/discussion due dates, grouped by day, plus anything overdue."""
     now = _now()
-    courses = await _courses(course)
+    courses = await _courses(course, include_hidden)
     items, results, _ = await _work_items(courses, now, days_ahead)
     horizon = now + timedelta(days=days_ahead)
     upcoming = sorted(
@@ -372,7 +414,7 @@ async def canvas_get_upcoming_deadlines(
     )
     overdue = [i for i in items if i.status == "overdue"]
 
-    out = [f"# Deadlines — next {days_ahead} days" + (f" in {_label(courses[0])}" if course else "")]
+    out = [f"# Deadlines — next {days_ahead} days" + (f" in {_label(courses[0])}{_hidden_tag(courses[0])}" if course else "")]
     if overdue:
         out.append("\n## Overdue (still accepting submissions)")
         out += [f"- {_item_line(i, now, show_course=not course)}" for i in sorted(overdue, key=lambda i: i.due_at)]
@@ -385,7 +427,7 @@ async def canvas_get_upcoming_deadlines(
         out.append(f"- {_item_line(i, now, show_course=not course)}")
     if not upcoming and not overdue:
         out.append("\nNothing due in this window.")
-    return "\n".join(out) + _course_errors(results)
+    return "\n".join(out) + _course_errors(results) + await _hidden_footer(course, include_hidden)
 
 
 @tool("List assignments in a course")
@@ -417,7 +459,7 @@ async def canvas_list_assignments(
     sel.sort(key=lambda i: i.due_at or far, reverse=status in {"past", "graded"})
     if not sel:
         return f"No {status} assignments in {_label(courses[0])}."
-    lines = [f"{len(sel)} {status} assignments in **{courses[0]['name']}** (course_id={courses[0]['id']}):"]
+    lines = [f"{len(sel)} {status} assignments in **{courses[0]['name']}**{_hidden_tag(courses[0])} (course_id={courses[0]['id']}):"]
     lines += [f"- {_item_line(i, now, show_course=False)}" for i in sel[:limit]]
     if len(sel) > limit:
         lines.append(f"… {len(sel) - limit} more (raise limit to see them)")
@@ -445,7 +487,7 @@ async def canvas_get_assignment(
     now = _now()
     tz = _tz()
 
-    out = [f"# {a['name']}", f"{crs['name']} · course_id={cid} · assignment_id={a['id']}", a.get("html_url", "")]
+    out = [f"# {a['name']}", f"{crs['name']}{_hidden_tag(crs)} · course_id={cid} · assignment_id={a['id']}", a.get("html_url", "")]
     facts = [
         ("Due", fmt_dt(a.get("due_at"), tz, now)),
         ("Available from", fmt_dt(a.get("unlock_at"), tz) if a.get("unlock_at") else None),
@@ -509,10 +551,12 @@ async def canvas_list_announcements(
     days_back: Annotated[int, Field(ge=1, le=180)] = 14,
     limit: Annotated[int, Field(ge=1, le=50)] = 10,
     full_text: Annotated[bool, Field(description="Show full announcement bodies instead of a preview.")] = False,
+    include_hidden: IncludeHiddenArg = False,
 ) -> str:
     """Recent course announcements, newest first, with author, date, unread flag, and message text."""
     c = client()
-    courses = await _courses(course)
+    courses = await _courses(course, include_hidden)
+    footer = await _hidden_footer(course, include_hidden)
     now = _now()
     by_code = {f"course_{x['id']}": x for x in courses}
     anns: list[dict] = []
@@ -528,7 +572,7 @@ async def canvas_list_announcements(
         )
     anns.sort(key=lambda x: x.get("posted_at") or "", reverse=True)
     if not anns:
-        return f"No announcements in the last {days_back} days."
+        return f"No announcements in the last {days_back} days." + footer
     tz = _tz()
     out = [f"{len(anns)} announcements in the last {days_back} days" + (f" (showing {limit})" if len(anns) > limit else "") + ":"]
     for x in anns[:limit]:
@@ -537,23 +581,24 @@ async def canvas_list_announcements(
         author = (x.get("author") or {}).get("display_name") or x.get("user_name") or "?"
         body = html_to_text(x.get("message"), None if full_text else 600)
         out.append(
-            f"\n### {x.get('title')}\n{_label(crs) if crs else x.get('context_code')} · {author} · "
+            f"\n### {x.get('title')}\n{(_label(crs) + _hidden_tag(crs)) if crs else x.get('context_code')} · {author} · "
             f"{fmt_dt(x.get('posted_at'), tz, now)}{unread} · {x.get('html_url', '')}\n\n{body}"
         )
-    return "\n".join(out)
+    return "\n".join(out) + footer
 
 
 @tool("Get grades")
 async def canvas_get_grades(
     course: OptionalCourseArg = None,
     recent_days: Annotated[int, Field(ge=1, le=120, description="Window for 'recently graded' items.")] = 14,
+    include_hidden: IncludeHiddenArg = False,
 ) -> str:
     """Current grades. Without a course: each course's score plus recently graded work.
     With a course: per-assignment-group breakdown, every graded item, and missing work."""
     c = client()
     now = _now()
     tz = _tz()
-    courses = await _courses(course)
+    courses = await _courses(course, include_hidden)
     results = await c.gather_per_course(courses, lambda crs: c.assignments(crs["id"]))
     out: list[str] = []
     recent: list[tuple[datetime, str]] = []
@@ -569,7 +614,7 @@ async def canvas_get_grades(
             ungraded.append(_label(crs))
             continue
         out.append(
-            f"\n## {crs['name']} (course_id={crs['id']})\nCurrent: "
+            f"\n## {crs['name']}{_hidden_tag(crs)} (course_id={crs['id']})\nCurrent: "
             + (f"{score}%" + (f" ({grade})" if grade else "") if score is not None else "not available (hidden by instructor?)")
         )
         for a in graded:
@@ -605,7 +650,7 @@ async def canvas_get_grades(
     if recent and not course:
         out.append(f"\n## Graded in the last {recent_days} days")
         out += [line for _, line in sorted(recent, reverse=True)]
-    return ("# Grades" + "\n".join(out) + _course_errors(results)).strip()
+    return ("# Grades" + "\n".join(out) + _course_errors(results)).strip() + await _hidden_footer(course, include_hidden)
 
 
 def _match_items(key: str, items: list[GradeItem]) -> GradeItem:
@@ -723,7 +768,7 @@ async def canvas_what_if_grade(
         applied.append(f"- {it.name}: {pct:g}% → {it.score:g}/{it.points:g}{was}")
     proj = project(items, groups, weighted, fixed_empty) if applied else actual
 
-    out = [f"# What-if grades — {crs['name']}"]
+    out = [f"# What-if grades — {crs['name']}{_hidden_tag(crs)}"]
     enr = next((e for e in detail.get("enrollments") or crs.get("enrollments") or [] if e.get("type") == "student"), {})
     canvas_now = enr.get("computed_current_score")
     if actual.current is not None:
@@ -787,14 +832,16 @@ async def canvas_what_if_grade(
 async def canvas_get_calendar_events(
     days_ahead: Annotated[int, Field(ge=1, le=120)] = 14,
     course: OptionalCourseArg = None,
+    include_hidden: IncludeHiddenArg = False,
 ) -> str:
     """Non-assignment calendar events (exams, review sessions, office hours, class meetings) from Canvas."""
     c = client()
     now = _now()
     tz = _tz()
-    courses = await _courses(course)
+    courses = await _courses(course, include_hidden)
+    footer = await _hidden_footer(course, include_hidden)
     codes = [f"course_{x['id']}" for x in courses]
-    names = {f"course_{x['id']}": _label(x) for x in courses}
+    names = {f"course_{x['id']}": _label(x) + _hidden_tag(x) for x in courses}
     window = {"type": "event", "start_date": now.isoformat(), "end_date": (now + timedelta(days=days_ahead)).isoformat()}
     events: list[dict] = []
     for chunk in (codes[i : i + 10] for i in range(0, len(codes), 10)):
@@ -807,7 +854,7 @@ async def canvas_get_calendar_events(
             pass
     events.sort(key=lambda e: e.get("start_at") or "")
     if not events:
-        return f"No calendar events in the next {days_ahead} days."
+        return f"No calendar events in the next {days_ahead} days." + footer
     out = [f"{len(events)} events in the next {days_ahead} days:"]
     for e in events:
         line = f"- **{e.get('title')}** — {names.get(e.get('context_code'), e.get('context_name') or 'Personal')} — {fmt_dt(e.get('start_at'), tz, now)}"
@@ -818,7 +865,7 @@ async def canvas_get_calendar_events(
         if desc := html_to_text(e.get("description"), 300):
             line += f"\n  {desc}"
         out.append(line)
-    return "\n".join(out)
+    return "\n".join(out) + footer
 
 
 @tool("Get course syllabus")
@@ -836,7 +883,7 @@ async def canvas_get_syllabus(
             f"{crs['name']} has no syllabus page in Canvas. It may be posted as a file or module item; "
             "try canvas_search_course_files with 'syllabus' or canvas_list_modules."
         )
-    return f"# Syllabus — {crs['name']}\n\n{text}"
+    return f"# Syllabus — {crs['name']}{_hidden_tag(crs)}\n\n{text}"
 
 
 @tool("List course modules")
@@ -853,7 +900,7 @@ async def canvas_list_modules(
     except CanvasError:
         quiz_to_assignment = {}
     tz = _tz()
-    out = [f"# Modules — {crs['name']}"]
+    out = [f"# Modules — {crs['name']}{_hidden_tag(crs)}"]
     needle = (search or "").lower()
     for m in modules:
         items = m.get("items")
@@ -912,7 +959,7 @@ async def canvas_get_page(
         return f"**{data.get('title')}** is locked: {data.get('lock_explanation') or 'not available yet'}"
     body = html_to_text(data.get("body"), max_chars) or "_This page is empty._"
     updated = fmt_dt(data.get("updated_at"), _tz()) if data.get("updated_at") else "?"
-    return f"# {data.get('title')}\n{crs['name']} · updated {updated} · {data.get('html_url', '')}\n\n{body}"
+    return f"# {data.get('title')}\n{crs['name']}{_hidden_tag(crs)} · updated {updated} · {data.get('html_url', '')}\n\n{body}"
 
 
 @tool("Search course files")
@@ -932,7 +979,7 @@ async def canvas_search_course_files(
         return f"No files{' matching ' + repr(search_term) if search_term else ''} in {crs['name']}."
     tz = _tz()
     base = c.settings.base_url
-    out = [f"{len(files)} files in {crs['name']}" + (f" (showing {limit})" if len(files) > limit else "") + ":"]
+    out = [f"{len(files)} files in {crs['name']}{_hidden_tag(crs)}" + (f" (showing {limit})" if len(files) > limit else "") + ":"]
     for f in files[:limit]:
         size = f"{(f.get('size') or 0) / 1_000_000:.1f} MB"
         out.append(
@@ -947,7 +994,8 @@ async def canvas_list_inbox(
     unread_only: Annotated[bool, Field()] = True,
     limit: Annotated[int, Field(ge=1, le=50)] = 10,
 ) -> str:
-    """Recent Canvas inbox conversations (messages from instructors, TAs, classmates)."""
+    """Recent Canvas inbox conversations (messages from instructors, TAs, classmates).
+    Messages from hidden courses are still shown, labelled as such."""
     c = client()
     params = {"scope": "unread"} if unread_only else {}
     convos = await c.get_all("/conversations", params, cache=False)
@@ -958,12 +1006,62 @@ async def canvas_list_inbox(
     out = [f"{len(convos)} {'unread ' if unread_only else ''}conversations" + (f" (showing {limit})" if len(convos) > limit else "") + ":"]
     for cv in convos[:limit]:
         who = ", ".join(p.get("name", "?") for p in cv.get("participants") or [])
+        ctx = cv.get("context_code") or ""
+        hidden = " (hidden course)" if ctx.startswith("course_") and c.is_hidden(int(ctx.split("_")[1])) else ""
         out.append(
-            f"\n### {cv.get('subject') or '(no subject)'}\n{cv.get('context_name') or ''} · {who} · "
+            f"\n### {cv.get('subject') or '(no subject)'}\n{cv.get('context_name') or ''}{hidden} · {who} · "
             f"{fmt_dt(cv.get('last_message_at'), tz, now)} · {cv.get('message_count', '?')} messages\n"
             f"{(cv.get('last_message') or '').strip()}"
         )
     return "\n".join(out)
+
+
+@tool("Hide a course", LOCAL_SETTING)
+async def canvas_hide_course(
+    course: CourseArg,
+) -> str:
+    """Hide a course from course-wide summaries: to-do list, deadlines, announcements, calendar,
+    grade overview, and the overview/today/week/news/due shortcuts.
+
+    Use for courses the student doesn't need day to day (orientation, advising, clubs). The course
+    stays fully available when asked about by name. Only changes a local settings file, never Canvas.
+    """
+    c = client()
+    crs = await c.resolve_course(course)
+    if not c.hidden.hide(crs["id"], crs.get("name") or ""):
+        return f"**{crs.get('name')}** is already hidden."
+    return (
+        f"Hidden **{crs.get('name')}** (course_id={crs['id']}). It's now left out of the to-do list, deadlines, "
+        "announcements, calendar and grade summaries. You can still ask about it by name, and unhide it any time."
+    )
+
+
+@tool("Unhide a course", LOCAL_SETTING)
+async def canvas_unhide_course(
+    course: Annotated[str, Field(min_length=1, description="A hidden course's name, code or ID, or 'all' to unhide everything.")],
+) -> str:
+    """Bring a hidden course back into course-wide summaries (or every hidden course, with 'all')."""
+    c = client()
+    hidden = c.hidden.items()
+    if course.strip().lower() == "all":
+        n = c.hidden.unhide_all()
+        return f"Unhid {n} course{'s' if n != 1 else ''}." if n else "No courses were hidden."
+    q = course.strip()
+    if q.isdigit() and int(q) in hidden:
+        hits = [int(q)]
+    else:
+        qn = q.lower().replace(" ", "")
+        hits = [i for i, n in hidden.items() if qn in (n or "").lower().replace(" ", "")]
+    if not hits:  # maybe a course code; let the normal lookup decide
+        crs = await c.resolve_course(q)
+        if crs["id"] not in hidden:
+            return f"**{crs.get('name')}** isn't hidden."
+        hits = [crs["id"]]
+    if len(hits) > 1:
+        names = ", ".join(f"{hidden[i] or 'Unknown'} (id {i})" for i in hits)
+        raise ToolError(f"{course!r} matches several hidden courses: {names}. Pass the course ID instead.")
+    c.hidden.unhide(hits[0])
+    return f"Unhid **{hidden[hits[0]] or hits[0]}**. It's back in your to-do list, deadlines, announcements and summaries."
 
 
 def _require_writes() -> None:

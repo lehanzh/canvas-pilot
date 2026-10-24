@@ -33,15 +33,25 @@ COURSES = [
         "id": 202, "name": "Algorithms and Data", "course_code": "CS3000", "apply_assignment_group_weights": False,
         "enrollments": [{"type": "student", "computed_current_score": None}],
     },
-    {"id": 303, "name": None},  # restricted course: should be hidden
+    # An orientation shell: the course the hiding tests hide.
+    {
+        "id": 404, "name": "Husky 101 Orientation", "course_code": "Husky101.F26",
+        "enrollments": [{"type": "student", "computed_current_score": 100.0}],
+    },
+    {"id": 303, "name": None},  # restricted course: never listed
 ]
 
 GROUPS = {
     101: [{"id": 1, "name": "Homework", "group_weight": 30}, {"id": 2, "name": "Exams", "group_weight": 70}],
     202: [{"id": 3, "name": "Assignments", "group_weight": 0}],
+    404: [{"id": 9, "name": "Orientation", "group_weight": 0}],
 }
 
 ASSIGNMENTS = {
+    404: [
+        {"id": 41, "name": "Orientation quiz", "due_at": iso(30), "points_possible": 5, "assignment_group_id": 9,
+         "submission_types": ["online_quiz"], "published": True, "submission": {}},
+    ],
     101: [
         {"id": 11, "name": "HW 4", "due_at": iso(20), "points_possible": 10, "assignment_group_id": 1,
          "submission_types": ["online_upload"], "html_url": "https://x/11", "published": True,
@@ -92,6 +102,8 @@ PLANNER = [
      "planner_override": None, "plannable": {"title": "Office Hours"}},
     {"plannable_type": "calendar_event", "plannable_id": 504, "course_id": 101, "plannable_date": iso(40),
      "planner_override": None, "plannable": {"title": "Midterm review session"}},
+    {"plannable_type": "planner_note", "plannable_id": 78, "course_id": 404, "plannable_date": iso(10),
+     "planner_override": None, "plannable": {"title": "Bring ID card"}},
     {"plannable_type": "planner_note", "plannable_id": 77, "plannable_date": iso(5), "context_name": None,
      "planner_override": None, "plannable": {"title": "Email TA about regrade"}},
 ]
@@ -102,6 +114,13 @@ ANNOUNCEMENTS = [
      "html_url": "https://x/a1"},
     {"id": 2, "title": "Office hours", "context_code": "course_202", "posted_at": iso(-30), "read_state": "read",
      "user_name": "TA Sam", "message": "<ul><li>Mon 2pm</li><li>Wed 4pm</li></ul>"},
+    {"id": 3, "title": "Welcome week", "context_code": "course_404", "posted_at": iso(-2), "read_state": "unread",
+     "user_name": "Orientation Team", "message": "<p>Events all week.</p>"},
+]
+
+EVENTS = [
+    {"title": "Midterm review", "context_code": "course_101", "start_at": iso(48), "end_at": iso(49.5), "location_name": "WVH 210"},
+    {"title": "Orientation social", "context_code": "course_404", "start_at": iso(26)},
 ]
 
 
@@ -158,10 +177,14 @@ class FakeCanvas:
             codes = q.get_list("context_codes[]")
             return httpx.Response(200, json=[a for a in ANNOUNCEMENTS if a["context_code"] in codes])
         if path == "/calendar_events":
-            if q.get_list("context_codes[]") == ["user_self"]:
+            codes = q.get_list("context_codes[]")
+            if codes == ["user_self"]:
                 return httpx.Response(403, json={"status": "unauthorized"})
-            return httpx.Response(200, json=[{"title": "Midterm review", "context_code": "course_101", "start_at": iso(48),
-                                              "end_at": iso(49.5), "location_name": "WVH 210"}])
+            return httpx.Response(200, json=[e for e in EVENTS if e["context_code"] in codes])
+        if path == "/conversations":
+            return httpx.Response(200, json=[{"subject": "Welcome!", "context_code": "course_404", "context_name": "Husky 101",
+                                              "participants": [{"name": "Orientation Team"}], "last_message": "Hi there",
+                                              "last_message_at": iso(-1), "message_count": 1}])
         if path in {"/courses/101", "/courses/202"}:
             crs = next(c for c in COURSES if c["id"] == int(parts[1]))
             return httpx.Response(200, json={**crs, "grading_scheme": [["A", 0.94], ["A-", 0.9], ["B", 0.84], ["F", 0.0]]})
@@ -171,10 +194,10 @@ class FakeCanvas:
 
 
 @pytest.fixture
-def fake(monkeypatch):
+def fake(monkeypatch, tmp_path):
     fake = FakeCanvas()
     settings = Settings(base_url="https://canvas.test", token="test-token", timezone=ZoneInfo("America/New_York"),
-                        exclude_course_ids=frozenset())
+                        exclude_course_ids=frozenset(), hidden_courses_file=tmp_path / "hidden_courses.json")
     monkeypatch.setattr(server, "_client", CanvasClient(settings, transport=httpx.MockTransport(fake)))
     return fake
 
@@ -192,7 +215,7 @@ async def test_list_courses_paginates_and_hides_restricted(fake):
     out = await call("canvas_list_courses")
     assert "Object-Oriented Design" in out and "Algorithms and Data" in out
     assert "91.5% (A-)" in out
-    assert "2 active courses" in out
+    assert "3 active courses" in out
 
 
 async def test_daily_todo_ranks_and_filters(fake):
@@ -358,3 +381,54 @@ async def test_short_command_prompts_reference_real_tools():
             if args.get("course"):
                 assert f'course="{args["course"]}"' in text
         assert "days_back=3" in (await c.get_prompt("news", {"days": "3"})).messages[0].content.text
+
+
+# -- hidden courses -------------------------------------------------------------------
+
+
+async def test_hidden_course_left_out_of_summaries_but_reachable_by_name(fake):
+    assert "Hidden **Husky 101 Orientation**" in await call("canvas_hide_course", {"course": "Husky"})
+
+    todo = await call("canvas_get_daily_todo", {"days_ahead": 7})
+    assert "Orientation quiz" not in todo and "Bring ID card" not in todo
+    assert "1 hidden course not included (Husky 101 Orientation)" in todo
+    for tool, args, text in [
+        ("canvas_get_upcoming_deadlines", {}, "Orientation quiz"),
+        ("canvas_list_announcements", {"days_back": 7}, "Welcome week"),
+        ("canvas_get_calendar_events", {}, "Orientation social"),
+        ("canvas_get_grades", {}, "## Husky 101 Orientation"),
+    ]:
+        out = await call(tool, args)
+        assert text not in out and "hidden course not included" in out, tool
+        everything = await call(tool, {**args, "include_hidden": True})
+        assert text in everything and "not included" not in everything, tool
+
+    # Naming the course still works, and says it's hidden.
+    listing = await call("canvas_list_assignments", {"course": "Husky", "status": "all"})
+    assert "Orientation quiz" in listing and "(hidden course)" in listing
+    news = await call("canvas_list_announcements", {"course": "orientation", "days_back": 7})
+    assert "Welcome week" in news and "not included" not in news
+    # Inbox messages are never dropped, just labelled.
+    inbox = await call("canvas_list_inbox")
+    assert "Welcome!" in inbox and "(hidden course)" in inbox
+
+
+async def test_list_courses_hidden_section_and_unhide(fake):
+    await call("canvas_hide_course", {"course": "404"})
+    out = await call("canvas_list_courses")
+    assert "2 active courses" in out and "**Hidden (1)**" in out and "Husky 101 Orientation — course_id=404" in out
+    assert "already hidden" in await call("canvas_hide_course", {"course": "Husky"})
+    assert "Unhid **Husky 101 Orientation**" in await call("canvas_unhide_course", {"course": "husky"})
+    assert "isn't hidden" in await call("canvas_unhide_course", {"course": "Husky101"})
+    await call("canvas_hide_course", {"course": "Husky"})
+    await call("canvas_hide_course", {"course": "Algorithms"})
+    assert "Unhid 2 courses" in await call("canvas_unhide_course", {"course": "all"})
+    assert "Hidden (" not in await call("canvas_list_courses")
+
+
+async def test_visible_course_wins_a_name_tie(fake):
+    await call("canvas_hide_course", {"course": "Algorithms"})  # CS3000
+    # "CS" matches CS3500 (visible) and CS3000 (hidden): the visible one wins instead of an error.
+    assert "**Object-Oriented Design**" in await call("canvas_list_assignments", {"course": "CS", "status": "all"})
+    # A name only the hidden course matches still finds it.
+    assert "**Algorithms and Data** (hidden course)" in await call("canvas_list_assignments", {"course": "CS3000", "status": "all"})

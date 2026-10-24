@@ -30,7 +30,7 @@ AI app (Claude, Cursor, Codex, ...) ──stdio──▶ canvas-pilot ──HTTP
   AI app you connected.
 - It works with any Canvas instance, whether `*.instructure.com` or self-hosted, on macOS, Windows,
   and Linux.
-- It is built on the `mcp` Python SDK 2.x (`MCPServer`). It exposes 16 tools and 6 prompts.
+- It is built on the `mcp` Python SDK 2.x (`MCPServer`). It exposes 18 tools and 6 prompts.
 
 ---
 
@@ -100,6 +100,9 @@ If a client can't use the system keychain, pass the token in its `"env"` block a
 | `canvas-pilot client-config` | Prints config snippets for every supported app. |
 | `canvas-pilot set-token` | Saves or replaces the token in the system keychain. |
 | `canvas-pilot delete-token` | Removes the token from the keychain. |
+| `canvas-pilot hide <course>` | Hides a course from course-wide summaries (name, code or ID). |
+| `canvas-pilot unhide <course>` | Brings a hidden course back; `unhide all` clears the list. |
+| `canvas-pilot hidden` | Lists hidden courses. |
 
 Older `--check`, `--set-token`, and `--delete-token` flags still work.
 
@@ -125,14 +128,36 @@ course code, or part of the course name.
 | `canvas_get_page` | Reads a Canvas page by `page=` slug or title search |
 | `canvas_search_course_files` | Finds course files by name |
 | `canvas_list_inbox` | Canvas inbox conversations |
-| `canvas_list_courses` | Active courses with IDs and current scores |
+| `canvas_list_courses` | Active courses with IDs and current scores, plus a **Hidden** section |
+| `canvas_hide_course` 🗂 | Hides a course from course-wide summaries |
+| `canvas_unhide_course` 🗂 | Unhides one course, or `all` |
 | `canvas_mark_done` ✏️ | Checks an assignment or calendar deadline off in your Canvas planner |
 | `canvas_add_planner_note` ✏️ | Adds a personal note to your Canvas planner |
 
 Prompts, which apps show as commands: `overview`, `today`, `week`, `news`, `due`, `plan_assignment`.
 
-✏️ marks the only tools that write, and they touch only your private planner. Turn them off with
-`CANVAS_ALLOW_PLANNER_WRITES=false`.
+✏️ marks the only tools that write to Canvas, and they touch only your private planner. Turn them off
+with `CANVAS_ALLOW_PLANNER_WRITES=false`. 🗂 marks tools that change only the local hidden-courses file.
+
+### Hidden courses
+
+- **Where the list lives:** `hidden_courses.json` in the settings folder, as
+  `{"version": 1, "hidden": {"<id>": "<name>"}, "imported_legacy_ids": [...]}`.
+  - The file is re-read whenever it changes, so every running server sees a hide or unhide at once.
+  - Writes are atomic (write a temp file, then rename).
+- **Summaries leave hidden courses out** (`canvas_get_daily_todo`, `canvas_get_upcoming_deadlines`,
+  `canvas_list_announcements`, `canvas_get_calendar_events`, `canvas_get_grades`), and so do the
+  shortcuts built on them.
+  - Each takes `include_hidden` to include them for one call.
+  - Each ends with a footer naming what was left out.
+- **A named hidden course works normally:** every tool's `course` argument still resolves it, and
+  output marks it "(hidden course)".
+- **Name ties:** when a name matches both visible and hidden courses, the visible match wins, so
+  hiding never makes everyday questions ambiguous.
+- **The inbox isn't filtered;** conversations from hidden courses are labelled instead.
+- **The old `CANVAS_EXCLUDE_COURSE_IDS` setting** is imported into the file once per ID, then removed
+  from `config.env`. Imported IDs are remembered, so an unhide sticks even if the old variable still
+  exists elsewhere (such as a client's `env` block).
 
 ---
 
@@ -149,7 +174,7 @@ Prompts, which apps show as commands: `overview`, `today`, `week`, `news`, `due`
 |---|---|---|
 | `CANVAS_BASE_URL` | yes | Your Canvas address, e.g. `https://myschool.instructure.com` |
 | `CANVAS_TIMEZONE` | no | IANA zone for displayed times (default: the computer's zone) |
-| `CANVAS_EXCLUDE_COURSE_IDS` | no | Comma-separated course IDs to leave out of course-wide views. They stay reachable when asked for by ID. |
+| `CANVAS_EXCLUDE_COURSE_IDS` | no | **Legacy.** Imported once into the hidden-courses list (see [Hidden courses](#hidden-courses)); use `canvas-pilot hide` instead. |
 | `CANVAS_ALLOW_PLANNER_WRITES` | no | `false` disables `canvas_mark_done` and `canvas_add_planner_note` |
 | `CANVAS_KEYCHAIN_ACCOUNT` | no | Keychain account name (default: your OS username) |
 

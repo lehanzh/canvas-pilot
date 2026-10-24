@@ -22,11 +22,12 @@ You don't need any coding experience. Setup takes about **15 minutes**, and you 
 2. [What you need](#what-you-need)
 3. [Step-by-step setup](#step-by-step-setup)
 4. [How to use it](#how-to-use-it)
-5. [Shortcuts](#shortcuts)
-6. [Is it safe?](#is-it-safe)
-7. [Updating, changing, or removing it](#updating-changing-or-removing-it)
-8. [Troubleshooting](#troubleshooting)
-9. [For the technically curious](#for-the-technically-curious)
+5. [Hiding courses](#hiding-courses)
+6. [Shortcuts](#shortcuts)
+7. [Is it safe?](#is-it-safe)
+8. [Updating, changing, or removing it](#updating-changing-or-removing-it)
+9. [Troubleshooting](#troubleshooting)
+10. [For the technically curious](#for-the-technically-curious)
 
 ---
 
@@ -253,6 +254,7 @@ Just ask in your own words. You don't need special phrasing. Some ideas:
 - "I turned in Lab 5 on Gradescope. Mark it done."
 - "Remind me on Friday to start the lab report."
 - "Do I have any unread Canvas messages?"
+- "Hide Husky 101, I don't need it in my to-do list."
 
 **Good to know**
 - **Naming courses:** say it however you like, e.g. "CS3000", "3000", or "algorithms".
@@ -261,6 +263,30 @@ Just ask in your own words. You don't need special phrasing. Some ideas:
   clear them.
 - **Grade predictions are estimates.** They use your course's real grade weights, but can't know
   about curves, extra credit, or dropped-lowest-score rules.
+
+---
+
+## Hiding courses
+
+Canvas often lists courses you don't need day to day, such as orientation pages, advising, or clubs.
+**Hide** them so they stop cluttering your answers:
+
+> 💬 *"Hide Husky 101."*
+> 💬 *"Which courses are hidden?"*
+> 💬 *"Unhide Husky 101."* (or *"Unhide all my courses."*)
+
+**What hiding does:**
+- Hidden courses are **left out of** your to-do list, deadlines, announcements, calendar, grade
+  overview, and the **overview / today / week / news / due** shortcuts. A short note at the bottom
+  says how many were left out, so nothing disappears without you knowing.
+- You can **still ask about a hidden course by name** at any time, e.g. *"What's due in
+  Husky 101?"*, and you'll get a full answer.
+- Want everything just once? Ask *"…including hidden courses"*.
+- Canvas **messages** from hidden courses still show up, because instructors' messages matter.
+- Hiding only changes a small file on your computer. Nothing changes in Canvas itself.
+- It takes effect straight away in every connected app; no restart needed.
+
+At the start of each semester, ask *"List my courses"* and hide anything new you don't need.
 
 ---
 
@@ -343,14 +369,12 @@ your current token.
 canvas-pilot check
 ```
 
-**Hide courses you don't care about** (orientation, advising, clubs):
-1. Ask Claude *"List my courses with their IDs"* and note the ID numbers you want to hide.
-2. Open the settings file:
-   - Mac: `open -e ~/.config/canvas-pilot/config.env`
-   - Windows: `notepad $env:APPDATA\canvas-pilot\config.env`
-3. Add a line like this (your ID numbers, separated by commas), then save:
-   `CANVAS_EXCLUDE_COURSE_IDS=12345,67890`
-4. Quit and reopen your AI app.
+**Hide courses you don't need** (orientation, advising, clubs): just ask Claude, e.g. *"Hide
+Husky 101"*. See [Hiding courses](#hiding-courses). You can also do it in the Terminal:
+```bash
+canvas-pilot hide Husky 101
+```
+`canvas-pilot unhide Husky 101` brings it back, and `canvas-pilot hidden` lists what's hidden.
 
 **Remove it completely:**
 ```bash

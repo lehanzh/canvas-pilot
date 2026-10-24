@@ -1,4 +1,4 @@
-"""Command line: `canvas-pilot [serve|setup|check|set-token|delete-token|client-config]`."""
+"""Command line: `canvas-pilot [serve|setup|check|connect|hide|unhide|hidden|set-token|delete-token|client-config]`."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from .config import write_config_values  # noqa: F401  (re-exported for callers)
 
 LEGACY_FLAGS = {"--check": "check", "--set-token": "set-token", "--delete-token": "delete-token"}
 
@@ -26,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("set-token", help="Save or replace the Canvas token in the system keychain.")
     sub.add_parser("delete-token", help="Remove the Canvas token from the system keychain.")
     sub.add_parser("client-config", help="Print config snippets for Claude, Cursor, Codex, VS Code, Gemini.")
+    hide = sub.add_parser("hide", help="Leave a course out of to-do lists, deadlines and other summaries.")
+    hide.add_argument("course", nargs="+", help="Course name, code or ID, e.g. 'Husky 101'.")
+    unhide = sub.add_parser("unhide", help="Bring a hidden course back into summaries ('all' for every one).")
+    unhide.add_argument("course", nargs="+", help="Hidden course's name, code or ID, or 'all'.")
+    sub.add_parser("hidden", help="List hidden courses.")
     connect = sub.add_parser("connect", help="Add canvas-pilot to an AI app's settings for you.")
     connect.add_argument("app", choices=CONNECTABLE_APPS, help="Which app to connect.")
     args = parser.parse_args(argv)
@@ -51,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         case "connect":
             return connect_app(args.app)
+        case "hide" | "unhide" | "hidden":
+            return hide_command(args.command, " ".join(getattr(args, "course", []) or []))
     return 2
 
 
@@ -94,24 +103,6 @@ def _ask(prompt: str, default: str | None = None) -> str:
     suffix = f" [{default}]" if default else ""
     answer = input(f"{prompt}{suffix}: ").strip()
     return answer or (default or "")
-
-
-def write_config_values(path: Path, values: dict[str, str | None]) -> None:
-    """Set KEY=value lines in a dotenv file, keeping other lines and comments. None removes a key."""
-    lines = path.read_text().splitlines() if path.exists() else ["# canvas-pilot settings (no secrets here; the token is in the keychain)"]
-    remaining = dict(values)
-    out = []
-    for line in lines:
-        key = line.split("=", 1)[0].strip().removeprefix("#").strip() if "=" in line else None
-        if key in remaining:
-            value = remaining.pop(key)
-            if value is not None:
-                out.append(f"{key}={value}")
-            continue
-        out.append(line)
-    out += [f"{k}={v}" for k, v in remaining.items() if v is not None]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out) + "\n")
 
 
 def setup() -> int:
@@ -284,4 +275,39 @@ def connect_app(app: str) -> int:
         print("Connected to Claude Desktop. Open it now; the Canvas tools load when it starts.")
     else:
         print(f"Connected to {name}. Fully quit {name} and open it again to load the Canvas tools.")
+    return 0
+
+
+# -- hide / unhide ----------------------------------------------------------------
+
+
+def hide_command(command: str, course: str) -> int:
+    import asyncio
+
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from . import server
+    from .canvas import CanvasError
+    from .config import ConfigError
+
+    async def run() -> str:
+        try:
+            if command == "hide":
+                return await server.canvas_hide_course(course)
+            if command == "unhide":
+                return await server.canvas_unhide_course(course)
+            hidden = server.client().hidden.items()
+            if not hidden:
+                return "No hidden courses."
+            rows = [f"  {name or 'Unknown course'}  (course_id={cid})" for cid, name in sorted(hidden.items(), key=lambda kv: kv[1])]
+            return "Hidden courses (left out of summaries; still available by name):\n" + "\n".join(rows)
+        finally:
+            if server._client:
+                await server._client.aclose()
+
+    try:
+        print(asyncio.run(run()).replace("**", ""))
+    except (CanvasError, ConfigError, ToolError) as e:
+        print(f"Couldn't {command}: {e}")
+        return 1
     return 0

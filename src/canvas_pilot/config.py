@@ -45,6 +45,7 @@ class Settings:
     exclude_course_ids: frozenset[int] = field(default_factory=frozenset)
     allow_writes: bool = True
     token_source: str = "unknown"
+    hidden_courses_file: Path | None = None  # default: hidden_courses.json in config_dir()
 
     def __repr__(self) -> str:  # never print the token
         return f"Settings(base_url={self.base_url!r}, token=<hidden>, token_source={self.token_source!r})"
@@ -191,3 +192,21 @@ def load_settings() -> Settings:
         allow_writes=allow_writes,
         token_source=token_source,
     )
+
+
+def write_config_values(path: Path, values: dict[str, str | None]) -> None:
+    """Set KEY=value lines in a dotenv file, keeping other lines and comments. None removes a key."""
+    lines = path.read_text().splitlines() if path.exists() else ["# canvas-pilot settings (no secrets here; the token is in the keychain)"]
+    remaining = dict(values)
+    out = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip().removeprefix("#").strip() if "=" in line else None
+        if key in remaining:
+            value = remaining.pop(key)
+            if value is not None:
+                out.append(f"{key}={value}")
+            continue
+        out.append(line)
+    out += [f"{k}={v}" for k, v in remaining.items() if v is not None]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out) + "\n")

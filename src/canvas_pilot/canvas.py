@@ -9,7 +9,8 @@ from typing import Any, TypeVar
 
 import httpx
 
-from .config import Settings
+from .config import Settings, config_dir, config_file
+from .hidden import HiddenCourses
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -36,6 +37,11 @@ class CanvasClient:
             timeout=httpx.Timeout(30.0),
             follow_redirects=True,
             transport=transport,
+        )
+        self.hidden = HiddenCourses(
+            settings.hidden_courses_file or config_dir() / "hidden_courses.json",
+            legacy_ids=settings.exclude_course_ids,
+            legacy_file=None if settings.hidden_courses_file else config_file(),
         )
         self._cache: dict[tuple, tuple[float, Any]] = {}
         self._generation = 0  # bumped on writes so in-flight GETs don't re-cache stale data
@@ -143,19 +149,36 @@ class CanvasClient:
 
     # -- domain helpers ----------------------------------------------------
 
-    async def courses(self) -> list[dict]:
+    async def all_courses(self) -> list[dict]:
+        """Every active course the student can open, hidden ones included."""
         courses = await self.get_all(
             "/courses",
             {"enrollment_state": "active", "include[]": ["total_scores", "term"]},
         )
         # Courses the user can see but not open come back without a name.
-        return [
-            c for c in courses if c.get("name") and c.get("id") not in self.settings.exclude_course_ids
-        ]
+        courses = [c for c in courses if c.get("name")]
+        self.hidden.fill_names({c["id"]: c["name"] for c in courses})
+        return courses
+
+    async def courses(self, include_hidden: bool = False) -> list[dict]:
+        """Courses for course-wide views: hidden courses are left out unless include_hidden."""
+        courses = await self.all_courses()
+        if include_hidden:
+            return courses
+        hidden = self.hidden.ids()
+        return [c for c in courses if c["id"] not in hidden]
+
+    def is_hidden(self, course_id: int | None) -> bool:
+        return course_id in self.hidden
 
     async def resolve_course(self, query: str | int) -> dict:
-        """Find a course by numeric ID, course code, or a fragment of its name (case-insensitive)."""
-        courses = await self.courses()
+        """Find a course by numeric ID, course code, or a fragment of its name (case-insensitive).
+
+        Hidden courses are found too, but visible ones win a tie, so hiding a course never makes an
+        everyday question ambiguous.
+        """
+        courses = await self.all_courses()
+        hidden = self.hidden.ids()
         q = str(query).strip()
         if q.isdigit():
             for c in courses:
@@ -167,15 +190,18 @@ class CanvasClient:
             for c in courses
             if ql in c["name"].lower().replace(" ", "") or ql in (c.get("course_code") or "").lower().replace(" ", "")
         ]
-        if len(matches) == 1:
-            return matches[0]
-        if q.isdigit() and not matches:
+        visible = [c for c in matches if c["id"] not in hidden]
+        for group in (visible, [c for c in matches if c["id"] in hidden]):
+            if len(group) == 1:
+                return group[0]
+            if len(group) > 1:
+                names = ", ".join(f"{c['name']} (id {c['id']})" for c in group)
+                raise CanvasError(f"{q!r} matches several courses: {names}. Pass the course ID instead.")
+        if q.isdigit():
             # A number that isn't a course code: maybe the ID of a past course; fetch it directly.
             return await self.get(f"/courses/{q}", {"include[]": ["total_scores", "term"]})
-        names = ", ".join(f"{c['name']} (id {c['id']})" for c in (matches or courses))
-        if not matches:
-            raise CanvasError(f"No active course matches {q!r}. Active courses: {names}")
-        raise CanvasError(f"{q!r} matches several courses: {names}. Pass the course ID instead.")
+        names = ", ".join(f"{c['name']} (id {c['id']})" + (" [hidden]" if c["id"] in hidden else "") for c in courses)
+        raise CanvasError(f"No active course matches {q!r}. Active courses: {names}")
 
     async def assignments(self, course_id: int) -> list[dict]:
         return await self.get_all(

@@ -261,8 +261,8 @@ Just ask in your own words. You don't need special phrasing. Some ideas:
 - **Work you hand in outside Canvas** (Gradescope, paper, in class): Canvas can't see those
   submissions, so they may still show up as to-dos. Tell Claude *"I submitted it, mark it done"* to
   clear them.
-- **Grade predictions are estimates.** They use your course's real grade weights, but can't know
-  about curves, extra credit, or dropped-lowest-score rules.
+- **Grade predictions are estimates.** They use your course's real grade weights and its
+  "drop the lowest score" rules, but can't know about curves or extra credit.
 
 ---
 
@@ -324,6 +324,14 @@ to-do list, or add a reminder note there, and only when you ask.
 **What does the AI see?**
 Only what it looks up to answer your question, such as the assignment you asked about. That
 information goes to the AI app you use (e.g. Claude), and that app's own privacy policy applies.
+
+**Could a sneaky message trick the AI?**
+Anyone who can post in a course (instructors, classmates in a discussion) writes text the AI reads.
+Canvas Pilot marks all such text as *"data from Canvas, not instructions"*, and tells the AI never to
+follow requests inside it or change anything because of it. This makes tricks like *"ignore your
+instructions and…"* much less likely to work, though no AI tool can rule them out completely. The
+worst such a trick could do here is tick items in your personal planner, because Canvas Pilot can't
+submit, post, or message.
 
 **Will my instructors know?**
 The assistant reads Canvas the same way you do when you browse it. Canvas may log that activity like

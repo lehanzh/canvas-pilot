@@ -10,6 +10,7 @@ from .config import ConfigError, config_file
 
 async def _check() -> int:
     from . import server
+    from .tools import assignments, courses
 
     try:
         c = server.client()
@@ -17,8 +18,8 @@ async def _check() -> int:
         print(f"OK: authenticated to {c.settings.base_url} as {me.get('name')} (timezone {c.settings.timezone})")
         print(f"Token read from: {c.settings.token_source}")
         print(f"Settings file: {config_file()}" + ("" if config_file().exists() else " (not created; using environment variables)") + "\n")
-        print(await server.canvas_list_courses())
-        print("\n" + await server.canvas_get_daily_todo(days_ahead=7, max_items=5))
+        print(await courses.canvas_list_courses())
+        print("\n" + await assignments.canvas_get_daily_todo(days_ahead=7, max_items=5))
     except (ConfigError, CanvasError) as e:
         print(f"FAILED: {e}")
         return 1

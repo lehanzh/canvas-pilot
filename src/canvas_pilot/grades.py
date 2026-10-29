@@ -14,8 +14,11 @@ at least one score is kept. Without drop rules final(x) is a straight line, so t
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+
+from .textutil import norm_title
 
 # Canvas's built-in scheme, used when a course doesn't expose its own.
 DEFAULT_SCHEME: list[tuple[str, float]] = [
@@ -256,6 +259,97 @@ def project(
         final_at=final_at,
         has_drops=has_drops,
     )
+
+
+# One "name=score" pair. Names may contain commas or colons; the score must be a number, which is what ends a name.
+_WHAT_IF_PAIR = re.compile(r"\s*(?P<key>[^;\n]+?)\s*[=:]\s*(?P<pct>\d+(?:\.\d+)?)\s*%?\s*(?:[;,\n]|$)")
+
+
+def parse_what_if(text: str | None) -> dict[str, float]:
+    """Parse "Homework-3=85; Midterm Exams=75" into {name: percent}.
+
+    A string instead of an object parameter: free-form maps are the JSON Schema shape that
+    strict clients (Gemini, OpenAI strict mode) reject or drop.
+    """
+    pairs: dict[str, float] = {}
+    text = (text or "").strip()
+    pos = 0
+    while pos < len(text):
+        m = _WHAT_IF_PAIR.match(text, pos)
+        if not m:
+            raise ValueError(
+                f"Couldn't read what_if near {text[pos:][:60]!r}. "
+                'Use "name=score" pairs separated by semicolons, e.g. "Homework-3=85; Midterm Exams=75".'
+            )
+        pairs[m["key"]] = float(m["pct"])
+        pos = m.end()
+    return pairs
+
+
+def _match_item(key: str, items: list[GradeItem]) -> GradeItem:
+    k = key.strip()
+    if k.isdigit():
+        hits = [i for i in items if i.item_id == int(k)]
+    else:
+        kn = norm_title(k)
+        hits = [i for i in items if kn and kn in norm_title(i.name)]
+        exact = [i for i in hits if norm_title(i.name) == kn]
+        hits = exact or hits
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise ValueError(
+            f"No assignment or category matches {key!r} for the what-if. "
+            "Use canvas_list_assignments for assignment names or canvas_get_grades for categories."
+        )
+    raise ValueError(f"{key!r} matches several assignments: " + ", ".join(i.name for i in hits[:10]) + ". Be more specific.")
+
+
+def _has_item_match(key: str, items: list[GradeItem]) -> bool:
+    try:
+        _match_item(key, items)
+        return True
+    except ValueError as e:
+        return "several" in str(e)  # ambiguous item names still mean the user meant assignments
+
+
+def _match_group(key: str, groups: list[dict]) -> dict | None:
+    kn = norm_title(key)
+    hits = [g for g in groups if kn and kn in norm_title(g.get("name") or "")]
+    exact = [g for g in hits if norm_title(g.get("name") or "") == kn]
+    hits = exact or hits
+    return hits[0] if len(hits) == 1 else None
+
+
+def apply_what_ifs(
+    what_ifs: dict[str, float], items: list[GradeItem], groups: list[dict], weighted: bool
+) -> tuple[list[str], dict[int | None, float]]:
+    """Set hypothetical percentages on items, in place. A key names an assignment (or part of one), an
+    assignment ID, or a whole category: everything left in it, or a weighted category with nothing posted.
+
+    Returns a line describing each what-if, and the fixed_empty map for project(). Raises ValueError.
+    """
+    applied: list[str] = []
+    fixed_empty: dict[int | None, float] = {}
+    for key, pct in what_ifs.items():
+        group = _match_group(key, groups) if not _has_item_match(key, items) else None
+        if group is not None:
+            left = [i for i in items if i.group_id == group["id"] and i.score is None]
+            if left:
+                for it in left:
+                    it.score, it.source = it.points * pct / 100.0, "what-if"
+                applied.append(f"- everything left in {group['name']} ({len(left)} items): {pct:g}%")
+            elif weighted and group.get("group_weight"):
+                fixed_empty[group["id"]] = pct / 100.0
+                applied.append(f"- {group['name']} (nothing posted yet, {group['group_weight']:g}% weight): {pct:g}%")
+            else:
+                raise ValueError(f"{group['name']} has nothing left to score, so a what-if there changes nothing.")
+            continue
+        it = _match_item(key, items)
+        it.original_score, it.score, it.source = it.score, it.points * pct / 100.0, "what-if"
+        was = f" (actual {it.original_score:g}/{it.points:g})" if it.original_score is not None else ""
+        applied.append(f"- {it.name}: {pct:g}% → {it.score:g}/{it.points:g}{was}")
+    return applied, fixed_empty
 
 
 def describe_need(needed: float | None) -> str:

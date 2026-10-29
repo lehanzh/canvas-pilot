@@ -244,7 +244,7 @@ final(x) = base + slope × x          needed average = (target − base) / slope
 - Calendar-only deadlines, with borrowed points.
 - `unposted_points` for points courses that will post more work.
 
-**What-ifs:** `{"Homework-3": 85, "Midterm Exams": 75}`. Keys match an assignment name fragment, an
+**What-ifs:** `"Homework-3=85; Midterm Exams=75"`. Names match an assignment name fragment, an
 assignment ID, or a category name. A category what-if sets everything left in it, or fixes an empty
 weighted category.
 
@@ -309,10 +309,12 @@ npx @modelcontextprotocol/inspector canvas-pilot
 ```
 canvas-pilot/
 ├── src/canvas_pilot/
-│   ├── server.py      MCP tools and prompts
+│   ├── server.py      MCP server setup: instructions, tool() wrapper, Canvas client
+│   ├── tools/         MCP tools, one module per area (courses, assignments, grades, content, planner)
+│   ├── prompts.py     MCP prompts (overview, today, week, news, due, plan an assignment)
 │   ├── canvas.py      async Canvas client: auth, Link-header pagination, retries, 2-min cache
-│   ├── priority.py    work-item model, grade-impact math, priority scoring
-│   ├── grades.py      what-if grade projection
+│   ├── priority.py    work items, calendar-only deadlines, grade-impact math, priority scoring
+│   ├── grades.py      what-if parsing and grade projection
 │   ├── textutil.py    Canvas HTML → text, local-time formatting
 │   ├── config.py      settings file, environment, keychain
 │   ├── cli.py         setup / check / connect / set-token / client-config

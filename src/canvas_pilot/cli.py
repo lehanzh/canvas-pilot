@@ -287,15 +287,16 @@ def hide_command(command: str, course: str) -> int:
     from mcp.server.mcpserver.exceptions import ToolError
 
     from . import server
+    from .tools import courses
     from .canvas import CanvasError
     from .config import ConfigError
 
     async def run() -> str:
         try:
             if command == "hide":
-                return await server.canvas_hide_course(course)
+                return await courses.canvas_hide_course(course)
             if command == "unhide":
-                return await server.canvas_unhide_course(course)
+                return await courses.canvas_unhide_course(course)
             hidden = server.client().hidden.items()
             if not hidden:
                 return "No hidden courses."

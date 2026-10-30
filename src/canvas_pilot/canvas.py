@@ -18,6 +18,8 @@ R = TypeVar("R")
 CACHE_TTL_SECONDS = 120
 MAX_PAGES = 50
 MAX_CONCURRENCY = 6
+# A timed-out request may still have reached Canvas; only these are safe to send again.
+RETRY_ON_TIMEOUT = {"GET", "PUT"}
 
 
 class CanvasError(Exception):
@@ -58,6 +60,11 @@ class CanvasClient:
                 try:
                     resp = await self._http.request(method, url, **kwargs)
                 except httpx.TimeoutException as e:
+                    if method not in RETRY_ON_TIMEOUT:
+                        # Retrying a POST could create a second planner note if the first one landed.
+                        raise CanvasError(
+                            "Canvas timed out, so the change may or may not have been saved. Check before trying again."
+                        ) from e
                     if attempt == 2:
                         raise CanvasError("Canvas timed out. Try again, or narrow the request.") from e
                     continue
@@ -109,7 +116,7 @@ class CanvasClient:
         gen = self._generation
         data = self._json(await self._request("GET", path, params=params))
         if cache and gen == self._generation:
-            self._cache[key] = (time.monotonic(), data)
+            self._store(key, data)
         return data
 
     async def get_all(self, path: str, params: dict[str, Any] | None = None, *, cache: bool = True) -> list[Any]:
@@ -130,10 +137,19 @@ class CanvasClient:
             next_url = resp.links.get("next", {}).get("url")
             if not next_url:
                 break
+            # The client sends the token with every request, so never follow a link off the Canvas host.
+            if httpx.URL(next_url).host != self._http.base_url.host:
+                raise CanvasError(f"Canvas pointed the next page of {path} at another host; stopped to protect your token.")
             resp = await self._request("GET", next_url)
         if cache and gen == self._generation:
-            self._cache[key] = (time.monotonic(), items)
+            self._store(key, items)
         return items
+
+    def _store(self, key: tuple, data: Any) -> None:
+        # Drop expired entries as we go: some keys embed the current time, so they're never read again.
+        now = time.monotonic()
+        self._cache = {k: v for k, v in self._cache.items() if now - v[0] < CACHE_TTL_SECONDS}
+        self._cache[key] = (now, data)
 
     async def post(self, path: str, data: dict[str, Any]) -> Any:
         return await self._write("POST", path, data)
